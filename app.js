@@ -8,7 +8,7 @@
   const defaults = () => ({
     xp: 0, streak: 0, lastDay: null, reviewDay: null,
     done: {}, daily: {}, stats: {},
-    settings: { name: 'Anke', serverUrl: '', slow: true, goal: 20 }
+    settings: { name: 'Anke', serverUrl: '', slow: true, goal: 20, voiceName: '' }
   });
   function load() {
     try {
@@ -42,9 +42,14 @@
     base() { return (S.settings.serverUrl || '').trim().replace(/\/+$/, ''); },
     pickVoice() {
       if (!('speechSynthesis' in window)) return;
-      const score = v => (/en[-_]US/i.test(v.lang) ? 10 : 0) + (/premium|enhanced/i.test(v.name) ? 5 : 0) + (/samantha|ava|allison|nicky|evan/i.test(v.name) ? 3 : 0);
-      const vs = speechSynthesis.getVoices().filter(v => /^en[-_]/i.test(v.lang));
-      this.synthVoice = vs.sort((a, b) => score(b) - score(a))[0] || null;
+      const score = v => (/en[-_]US/i.test(v.lang) ? 10 : 0) + (/premium/i.test(v.name) ? 8 : /enhanced/i.test(v.name) ? 6 : 0) + (/ava|samantha|allison|nicky|zoe|evan|tom/i.test(v.name) ? 3 : 0) + (/compact|eloquence|grandma|grandpa|rocko|reed|shelley|flo|sandy|eddy/i.test(v.name) ? -8 : 0);
+      const vs = this.list();
+      const chosen = S.settings.voiceName && vs.find(v => v.name === S.settings.voiceName);
+      this.synthVoice = chosen || vs.slice().sort((a, b) => score(b) - score(a))[0] || null;
+    },
+    list() {
+      if (!('speechSynthesis' in window)) return [];
+      return speechSynthesis.getVoices().filter(v => /^en[-_]/i.test(v.lang));
     },
     unlock() {
       if (this.unlocked) return;
@@ -104,7 +109,8 @@
         const u = new SpeechSynthesisUtterance(text);
         u.lang = 'en-US';
         if (this.synthVoice) u.voice = this.synthVoice;
-        u.rate = slow ? 0.6 : 0.9;
+        u.rate = slow ? 0.72 : 0.92;
+        u.pitch = 1.05;
         u.onend = u.onerror = () => res();
         speechSynthesis.speak(u);
         setTimeout(res, 12000);
@@ -530,6 +536,9 @@
       <label class="field">Name<input data-set="name" value="${esc(s.name)}" autocomplete="off"></label>
       <label class="field">Ryzen-Server (optional)<input data-set="serverUrl" value="${esc(s.serverUrl)}" placeholder="https://mein-ryzen.tailxxxx.ts.net" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
       <p class="hint left">${srv}</p>
+      <label class="field">Englische Stimme
+        <select data-set="voiceName"><option value="">Automatisch (beste verfügbare)</option>${Voice.list().map(v => `<option value="${esc(v.name)}" ${v.name === s.voiceName ? 'selected' : ''}>${esc(v.name)} (${esc(v.lang)})</option>`).join('')}</select></label>
+      <p class="hint left">Klingt die Stimme blechern? iPhone: Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen → Englisch → „Ava (Premium)“ laden. Danach hier wählen.</p>
       <label class="field row"><span>Langsam sprechen</span><input type="checkbox" data-set="slow" ${s.slow ? 'checked' : ''}></label>
       <label class="field">Tagesziel
         <select data-set="goal">${[10, 20, 30, 50].map(g => `<option value="${g}" ${g === s.goal ? 'selected' : ''}>${g} XP</option>`).join('')}</select></label>
@@ -592,7 +601,8 @@
     const k = el.dataset.set;
     S.settings[k] = el.type === 'checkbox' ? el.checked : k === 'goal' ? +el.value : el.value.trim();
     save();
-    if (k === 'serverUrl') Voice.check().then(() => { if (view === 'settings') render(); });
+    if (k === 'voiceName') { Voice.pickVoice(); Voice.speak('Hello ' + S.settings.name + '! H like horse.'); render(); }
+    else if (k === 'serverUrl') Voice.check().then(() => { if (view === 'settings') render(); });
     else render();
   });
 
