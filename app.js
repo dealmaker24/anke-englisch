@@ -124,32 +124,41 @@
     browserOk() { return !!(window.SpeechRecognition || window.webkitSpeechRecognition); },
     serverOk() { return Voice.server.ok && Voice.server.stt && !!(navigator.mediaDevices && window.MediaRecorder); },
     available() { return this.serverOk() || this.browserOk(); },
-    start() { return this.serverOk() ? this.viaServer() : this.viaBrowser(); },
+    // isDone(alts): true = Ergebnis reicht schon, sofort beenden (macht die Erkennung deutlich schneller)
+    start(isDone) { return this.serverOk() ? this.viaServer() : this.viaBrowser(isDone); },
     stopNow() {
       try { if (this.rec) this.rec.stop(); } catch { /* egal */ }
       try { if (this.mr && this.mr.state === 'recording') this.mr.stop(); } catch { /* egal */ }
     },
-    viaBrowser() {
+    viaBrowser(isDone) {
       return new Promise((resolve, reject) => {
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         const r = new SR();
         this.rec = r;
-        r.lang = 'en-US'; r.interimResults = false; r.maxAlternatives = 5; r.continuous = false;
-        let got = false;
+        r.lang = 'en-US'; r.interimResults = true; r.maxAlternatives = 5; r.continuous = false;
+        let done = false, latest = [], timer = null;
+        const finish = () => {
+          if (done) return;
+          done = true; clearTimeout(timer);
+          try { r.abort(); } catch { /* egal */ }
+          resolve({ alts: latest, via: 'iPhone' });
+        };
+        const fail = err => { if (done) return; done = true; clearTimeout(timer); reject(err); };
         r.onresult = e => {
-          got = true;
           const alts = [];
           for (const res of e.results) for (let i = 0; i < res.length; i++) alts.push(res[i].transcript);
-          resolve({ alts, via: 'iPhone' });
+          latest = alts;
+          const last = e.results[e.results.length - 1];
+          // sofort fertig, sobald die Antwort passt oder die Erkennung final ist
+          if ((isDone && isDone(alts)) || (last && last.isFinal)) finish();
         };
         r.onerror = e => {
-          if (got) return;
-          got = true;
-          if (e.error === 'no-speech' || e.error === 'aborted') resolve({ alts: [], via: 'iPhone' });
-          else reject(new Error(e.error));
+          if (e.error === 'no-speech' || e.error === 'aborted') finish();
+          else fail(new Error(e.error));
         };
-        r.onend = () => { if (!got) { got = true; resolve({ alts: [], via: 'iPhone' }); } };
-        try { r.start(); } catch (err) { reject(err); }
+        r.onend = finish;
+        timer = setTimeout(() => { try { r.stop(); } catch { /* egal */ } setTimeout(finish, 800); }, 4500);
+        try { r.start(); } catch (err) { fail(err); }
       });
     },
     async viaServer() {
@@ -177,10 +186,27 @@
 
   function errMsg(e) {
     const m = String((e && (e.message || e.error || e.name)) || '');
-    if (/not-allowed|permission|denied/i.test(m)) return 'Das Mikrofon ist nicht erlaubt. iPhone: Einstellungen → Safari → Mikrofon → Erlauben. Außerdem „Siri & Diktierfunktion“ einschalten.';
-    if (/network/i.test(m)) return 'Für die Spracherkennung fehlt gerade die Internetverbindung.';
-    return 'Das hat nicht geklappt (' + m + '). Bitte nochmal versuchen.';
+    const code = ' (Fehlercode: ' + m + ')';
+    if (/service-not-allowed/i.test(m)) return 'Die Diktierfunktion ist aus. iPhone: Einstellungen → Allgemein → Tastatur → „Diktierfunktion aktivieren“ einschalten, dann Einstellungen → Siri → „Siri & Diktierfunktion“ prüfen.' + code;
+    if (/not-allowed|permission|denied/i.test(m)) return 'Das Mikrofon wurde nicht erlaubt. Safari-Adressleiste (links „AA“) → Webseiten-Einstellungen → Mikrofon → Erlauben. Außerdem: Einstellungen → Safari → Mikrofon → Fragen oder Erlauben.' + code;
+    if (/language-not-supported/i.test(m)) return 'Englisch ist für die Diktierfunktion nicht verfügbar. Einstellungen → Allgemein → Tastatur → Tastaturen → Neue Tastatur → Englisch hinzufügen.' + code;
+    if (/audio-capture/i.test(m)) return 'Es wurde kein Mikrofon gefunden oder es wird gerade von einer anderen App benutzt.' + code;
+    if (/network/i.test(m)) return 'Für die Spracherkennung fehlt gerade die Internetverbindung.' + code;
+    return 'Das hat nicht geklappt. Bitte nochmal versuchen.' + code;
   }
+
+  /* ---------- Umgebung erkennen (hilft bei Ankes iPhone) ---------- */
+  const UA = navigator.userAgent || '';
+  const IS_IOS = /iPhone|iPad|iPod/.test(UA) || (/Macintosh/.test(UA) && 'ontouchend' in document);
+  const NOT_SAFARI = IS_IOS && (/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram|Line\/|GSA\/|Telegram/i.test(UA) || !/Safari\//.test(UA));
+  const STANDALONE = !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
+  function envHint() {
+    if (NOT_SAFARI) return 'Du nutzt gerade nicht den Safari-Browser (z. B. WhatsApp-, Telegram- oder Chrome-Fenster). Dort gehen Mikrofon und Spracherkennung nicht. Öffne den Link im Safari: in WhatsApp/Telegram oben rechts „Im Browser öffnen“ bzw. Kompass-Symbol antippen.';
+    if (!Listen.browserOk() && !Listen.serverOk()) return 'Dieses Gerät bietet keine Spracherkennung im Browser. Prüfe: Einstellungen → Siri → „Siri & Diktierfunktion“ ist an, und öffne die Seite im Safari.';
+    if (STANDALONE) return 'Hinweis: In der installierten App fragt iOS manchmal nach dem Mikrofon oder blockiert es. Wenn es nicht geht, öffne die Seite einmal direkt im Safari.';
+    return '';
+  }
+  let micTest = '';
 
   /* ---------- Lektionen bauen ---------- */
   const learnedLetters = () => {
@@ -319,7 +345,8 @@
     R.mic = 'listening'; R.heard = null; R.err = null; R.stage = 'question'; R.grade = null; R.coach = null;
     render();
     let res;
-    try { res = await Listen.start(); }
+    const quick = alts => (st.t === 'repeat' ? gradeLetter(st.L, alts) : gradeWord(st.L.word, alts)) === 'good';
+    try { res = await Listen.start(quick); }
     catch (e) { if (R.steps[R.i] === st) { R.mic = 'idle'; R.err = errMsg(e); render(); } return; }
     if (R.steps[R.i] !== st) return;
     R.mic = 'idle';
@@ -380,7 +407,15 @@
     return (h < 11 ? 'Guten Morgen' : h < 18 ? 'Guten Tag' : 'Guten Abend') + ', ' + esc(S.settings.name) + '!';
   }
 
+  function navHtml(active) {
+    const learned = learnedLetters().length;
+    const item = (act, id, icon, label, off) =>
+      `<button class="${active === id ? 'on' : ''}" ${off ? 'disabled' : `data-act="${act}"`}><span class="em">${icon}</span>${label}</button>`;
+    return `<nav class="nav">${item('home', 'home', '🏠', 'Start')}${item('review', 'review', '🌞', 'Tagesübung', !learned)}${item('settings', 'settings', '⚙️', 'Einstellungen')}</nav>`;
+  }
+
   function renderHome() {
+    const hint = envHint();
     const today = S.daily[dayStr()] || 0, goal = S.settings.goal;
     const pct = Math.min(100, Math.round(today / goal * 100));
     const nextId = (LESSONS.find(l => !S.done[l.id]) || {}).id;
@@ -399,7 +434,7 @@
     }).join('');
     const soon = COMING_SOON.map((c, i) => `<div class="node pos${(LESSONS.length + i) % 4} soon">
         <div class="circle locked"><span>${c.icon}</span></div><div class="nlabel">${esc(c.title)}<br><i>kommt bald</i></div></div>`).join('');
-    return `<div class="page">
+    return `<div class="page hasnav">
       <header class="head">
         <div class="stat">🔥 <b>${streakNow()}</b><small>Tage</small></div>
         <div class="stat">⭐ <b>${S.xp}</b><small>XP</small></div>
@@ -407,6 +442,7 @@
         <button class="icon" data-act="settings" aria-label="Einstellungen">⚙️</button>
       </header>
       <h1 class="hello">${greeting()}</h1>
+      ${hint && !STANDALONE ? `<p class="warn">⚠️ ${esc(hint)}</p>` : ''}
       <div class="goal"><div class="goalrow"><span>Tagesziel</span><b>${Math.min(today, goal)} / ${goal} XP</b></div><div class="bar"><i style="width:${pct}%"></i></div></div>
       <button class="card review ${learned ? '' : 'off'}" ${learned ? 'data-act="review"' : 'disabled'}>
         <span class="em">🌞</span>
@@ -414,13 +450,15 @@
       </button>
       <h2 class="sect">Alphabet</h2>
       <div class="path">${nodes}${soon}</div>
-    </div>`;
+    </div>${navHtml('home')}`;
   }
 
   function micBlock(st) {
     const can = Listen.available();
     if (!can) {
-      return `<p class="hint">Dein Gerät hat gerade keine Spracherkennung. Sprich laut nach und tippe dann auf den Knopf.</p>
+      const why = envHint();
+      return `<p class="hint">Spracherkennung ist hier nicht verfügbar. Sprich laut nach und tippe dann auf den Knopf.</p>
+        ${why ? `<p class="warn">⚠️ ${esc(why)}</p>` : ''}
         <button class="btn primary" data-act="selfsay">Ich habe es gesagt ✓</button>`;
     }
     const listening = R.mic === 'listening';
@@ -493,7 +531,7 @@
     }
 
     return `<div class="run">
-      <div class="topbar"><button class="x" data-act="quit" aria-label="Beenden">✕</button>
+      <div class="topbar"><button class="x" data-act="quit" aria-label="Zur Startseite">🏠 Start</button>
         <div class="bar"><i style="width:${pct}%"></i></div><span class="chip">⭐ ${R.xp}</span></div>
       <div class="stage">${body}</div>${foot}</div>`;
   }
@@ -531,8 +569,9 @@
     else if (Voice.server.ok) srv = `✅ Ryzen-Server verbunden · Zuhören: ${Voice.server.stt ? 'ja' : 'nein'} · Sprechen: ${Voice.server.tts ? 'ja' : 'nein'} · Coach: ${Voice.server.coach ? 'ja' : 'nein'}`;
     else srv = '⚠️ Server nicht erreichbar – es wird die Stimme des iPhones benutzt.';
     const vname = Voice.synthVoice ? Voice.synthVoice.name : 'keine englische Stimme gefunden';
-    return `<div class="page">
-      <header class="head"><button class="icon" data-act="home" aria-label="Zurück">←</button><h1 class="title">Einstellungen</h1></header>
+    const hint = envHint();
+    return `<div class="page hasnav">
+      <header class="head"><h1 class="title">⚙️ Einstellungen</h1></header>
       <label class="field">Name<input data-set="name" value="${esc(s.name)}" autocomplete="off"></label>
       <label class="field">Ryzen-Server (optional)<input data-set="serverUrl" value="${esc(s.serverUrl)}" placeholder="https://mein-ryzen.tailxxxx.ts.net" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
       <p class="hint left">${srv}</p>
@@ -546,9 +585,12 @@
         <div>🔊 iPhone-Stimme: <b>${esc(vname)}</b></div>
         <div>🎤 Spracherkennung: <b>${Listen.serverOk() ? 'Ryzen (Whisper)' : Listen.browserOk() ? 'iPhone / Safari' : 'nicht verfügbar'}</b></div>
       </div>
-      <div class="row2"><button class="btn ghost" data-act="test-server">Server testen</button><button class="btn ghost" data-act="test-voice">Stimme testen</button></div>
+      ${hint ? `<p class="warn">⚠️ ${esc(hint)}</p>` : ''}
+      <div class="row2"><button class="btn ghost" data-act="test-voice">🔊 Stimme testen</button><button class="btn ghost" data-act="test-mic">🎤 Mikrofon testen</button></div>
+      ${micTest ? `<p class="statusbox">${esc(micTest)}</p>` : ''}
+      <button class="btn ghost" data-act="test-server" style="margin-top:10px">Server testen</button>
       <button class="btn danger" data-act="reset">Fortschritt zurücksetzen</button>
-    </div>`;
+    </div>${navHtml('settings')}`;
   }
 
   function render() {
@@ -587,6 +629,14 @@
       case 'selfsay': selfSay(); break;
       case 'test-voice': Voice.speak('Hello ' + S.settings.name + '! A, B, C. H like horse.'); break;
       case 'test-server': Voice.check().then(() => render()); break;
+      case 'test-mic':
+        if (!Listen.available()) { micTest = envHint() || 'Keine Spracherkennung verfügbar.'; render(); break; }
+        micTest = '🎤 Ich höre zu … sag jetzt „hello“ oder „A“.'; render();
+        Listen.start(alts => alts.some(a => String(a).trim().length > 0))
+          .then(res => { micTest = res.alts.filter(Boolean).length ? '✅ Verstanden: „' + res.alts.filter(Boolean)[0] + '“. Das Mikrofon funktioniert.' : 'Nichts gehört. Sprich etwas lauter und näher am Gerät.'; })
+          .catch(err => { micTest = '❌ ' + errMsg(err); })
+          .finally(() => { if (view === 'settings') render(); });
+        break;
       case 'reset':
         if (confirm('Wirklich alles zurücksetzen (XP, Serie, Lektionen)?')) {
           const keep = S.settings; S = defaults(); S.settings = keep; save(); view = 'home'; render();
