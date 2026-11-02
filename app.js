@@ -26,6 +26,11 @@
   const streakNow = () => (S.lastDay === dayStr() || S.lastDay === yesterday()) ? S.streak : 0;
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const APP_V = '2026-11-02-c';
+  const HELP_TOPIC = 'anke-hilfe-ko8tuygh1irc88u7fpte';
+  // Kleines Logbuch der letzten Ereignisse (Spracherkennung usw.), wird bei „Hilfe senden“ mitgeschickt
+  const T0 = Date.now(), LOG = [];
+  const logEv = (ev, d) => { LOG.push({ t: Math.round((Date.now() - T0) / 100) / 10, ev, d }); if (LOG.length > 40) LOG.shift(); };
   const fetchTimeout = (url, opts = {}, ms = 8000) => {
     const c = new AbortController();
     const t = setTimeout(() => c.abort(), ms);
@@ -52,7 +57,8 @@
       return speechSynthesis.getVoices().filter(v => /^en[-_]/i.test(v.lang));
     },
     unlock() {
-      if (this.unlocked) return;
+      // Nur nötig, wenn die Ryzen-Stimme per Audio-Element läuft. Sonst stört es auf iOS das Mikrofon.
+      if (this.unlocked || !(this.server.ok && this.server.tts)) return;
       this.unlocked = true;
       try {
         this.audio.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=';
@@ -135,29 +141,36 @@
         const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
         const r = new SR();
         this.rec = r;
-        r.lang = 'en-US'; r.interimResults = true; r.maxAlternatives = 5; r.continuous = false;
+        r.lang = 'en-US'; r.interimResults = true; r.maxAlternatives = 10; r.continuous = false;
         let done = false, latest = [], timer = null;
-        const finish = () => {
+        const finish = why => {
           if (done) return;
           done = true; clearTimeout(timer);
+          logEv('rec-fertig', { why: typeof why === 'string' ? why : 'ende', alts: latest.slice(0, 4) });
           try { r.abort(); } catch { /* egal */ }
           resolve({ alts: latest, via: 'iPhone' });
         };
-        const fail = err => { if (done) return; done = true; clearTimeout(timer); reject(err); };
+        const fail = err => { if (done) return; done = true; clearTimeout(timer); logEv('rec-fehler', String(err && err.message)); reject(err); };
+        r.onstart = () => logEv('rec-start');
+        r.onaudiostart = () => logEv('mikrofon-an');
+        r.onspeechstart = () => logEv('sprache-erkannt');
         r.onresult = e => {
           const alts = [];
           for (const res of e.results) for (let i = 0; i < res.length; i++) alts.push(res[i].transcript);
           latest = alts;
           const last = e.results[e.results.length - 1];
+          logEv('rec-ergebnis', { final: !!(last && last.isFinal), alts: alts.slice(0, 3) });
           // sofort fertig, sobald die Antwort passt oder die Erkennung final ist
-          if ((isDone && isDone(alts)) || (last && last.isFinal)) finish();
+          if ((isDone && isDone(alts)) || (last && last.isFinal)) finish('treffer');
         };
         r.onerror = e => {
-          if (e.error === 'no-speech' || e.error === 'aborted') finish();
+          logEv('rec-error', e.error);
+          if (e.error === 'no-speech' || e.error === 'aborted') finish(e.error);
           else fail(new Error(e.error));
         };
-        r.onend = finish;
-        timer = setTimeout(() => { try { r.stop(); } catch { /* egal */ } setTimeout(finish, 800); }, 4500);
+        r.onend = () => finish('ende');
+        // iOS braucht manchmal etwas länger: erst nach 7 s stoppen, dann noch 2,5 s auf das Ergebnis warten
+        timer = setTimeout(() => { logEv('rec-timeout'); try { r.stop(); } catch { /* egal */ } timer = setTimeout(() => finish('timeout'), 2500); }, 7000);
         try { r.start(); } catch (err) { fail(err); }
       });
     },
@@ -198,10 +211,11 @@
   /* ---------- Umgebung erkennen (hilft bei Ankes iPhone) ---------- */
   const UA = navigator.userAgent || '';
   const IS_IOS = /iPhone|iPad|iPod/.test(UA) || (/Macintosh/.test(UA) && 'ontouchend' in document);
-  const NOT_SAFARI = IS_IOS && (/CriOS|FxiOS|EdgiOS|OPiOS|FBAN|FBAV|Instagram|Line\/|GSA\/|Telegram/i.test(UA) || !/Safari\//.test(UA));
+  // Chrome auf dem iPhone funktioniert; nur eingebettete Fenster (WhatsApp, Telegram, Facebook …) blockieren das Mikrofon
+  const NOT_SAFARI = IS_IOS && (/FBAN|FBAV|Instagram|Line\/|GSA\/|Telegram/i.test(UA) || !/Safari\//.test(UA));
   const STANDALONE = !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
   function envHint() {
-    if (NOT_SAFARI) return 'Du nutzt gerade nicht den Safari-Browser (z. B. WhatsApp-, Telegram- oder Chrome-Fenster). Dort gehen Mikrofon und Spracherkennung nicht. Öffne den Link im Safari: in WhatsApp/Telegram oben rechts „Im Browser öffnen“ bzw. Kompass-Symbol antippen.';
+    if (NOT_SAFARI) return 'Du nutzt gerade ein eingebettetes Fenster (z. B. aus WhatsApp oder Telegram). Dort gehen Mikrofon und Spracherkennung nicht. Öffne den Link im Safari oder Chrome: oben rechts „Im Browser öffnen“ bzw. das Kompass-Symbol antippen.';
     if (!Listen.browserOk() && !Listen.serverOk()) return 'Dieses Gerät bietet keine Spracherkennung im Browser. Prüfe: Einstellungen → Siri → „Siri & Diktierfunktion“ ist an, und öffne die Seite im Safari.';
     if (STANDALONE) return 'Hinweis: In der installierten App fragt iOS manchmal nach dem Mikrofon oder blockiert es. Wenn es nicht geht, öffne die Seite einmal direkt im Safari.';
     return '';
@@ -345,6 +359,9 @@
     R.mic = 'listening'; R.heard = null; R.err = null; R.stage = 'question'; R.grade = null; R.coach = null;
     render();
     let res;
+    // kurze Pause: nach der Sprachausgabe braucht iOS einen Moment, bis das Mikrofon sauber startet
+    try { speechSynthesis.cancel(); } catch { /* egal */ }
+    await sleep(500);
     const quick = alts => (st.t === 'repeat' ? gradeLetter(st.L, alts) : gradeWord(st.L.word, alts)) === 'good';
     try { res = await Listen.start(quick); }
     catch (e) { if (R.steps[R.i] === st) { R.mic = 'idle'; R.err = errMsg(e); render(); } return; }
@@ -354,6 +371,7 @@
     R.heard = alts[0] || '';
     const g = st.t === 'repeat' ? gradeLetter(st.L, alts) : gradeWord(st.L.word, alts);
     R.grade = g;
+    logEv('bewertung', { schritt: st.t, buchstabe: st.L.l, gehoert: alts.slice(0, 3), urteil: g });
     if (g === 'good' || g === 'close') {
       R.stage = 'answered'; R.right++; R.xp += g === 'good' ? 10 : 5; bump(st.L.l, true);
       R.msg = g === 'good'
@@ -411,7 +429,7 @@
     const learned = learnedLetters().length;
     const item = (act, id, icon, label, off) =>
       `<button class="${active === id ? 'on' : ''}" ${off ? 'disabled' : `data-act="${act}"`}><span class="em">${icon}</span>${label}</button>`;
-    return `<nav class="nav">${item('home', 'home', '🏠', 'Start')}${item('review', 'review', '🌞', 'Tagesübung', !learned)}${item('settings', 'settings', '⚙️', 'Einstellungen')}</nav>`;
+    return `<nav class="nav">${item('home', 'home', '🏠', 'Start')}${item('review', 'review', '🌞', 'Übung', !learned)}${item('settings', 'settings', '⚙️', 'Einstellungen')}${item('help', 'help', '🆘', 'Hilfe')}</nav>`;
   }
 
   function renderHome() {
@@ -524,7 +542,8 @@
         const coach = R.coach ? `<p class="coach">🦊 ${esc(R.coach)}</p>` : '';
         const tip = (R.stage === 'miss') ? `<p class="coach">💡 ${esc(L.tip)}</p>` : '';
         const btns = R.stage === 'miss'
-          ? `<div class="row2"><button class="btn ghost" data-act="mic">🎤 Nochmal</button><button class="btn primary" data-act="skip">Weiter</button></div>`
+          ? `<div class="row2"><button class="btn ghost" data-act="mic">🎤 Nochmal</button><button class="btn primary" data-act="skip">Weiter</button></div>
+             <button class="link" data-act="selfsay">Ich habe es richtig gesagt ✓</button>`
           : `<button class="btn primary" data-act="next">Weiter</button>`;
         foot = `<div class="foot fb ${m.cls}"><div class="fbt">${esc(m.title)}</div><div class="fbx">${esc(m.text)}</div>${tip}${coach}${btns}</div>`;
       }
@@ -532,7 +551,7 @@
 
     return `<div class="run">
       <div class="topbar"><button class="x" data-act="quit" aria-label="Zur Startseite">🏠 Start</button>
-        <div class="bar"><i style="width:${pct}%"></i></div><span class="chip">⭐ ${R.xp}</span></div>
+        <div class="bar"><i style="width:${pct}%"></i></div><span class="chip">⭐ ${R.xp}</span><button class="x" data-act="help" aria-label="Hilfe">🆘</button></div>
       <div class="stage">${body}</div>${foot}</div>`;
   }
 
@@ -586,15 +605,88 @@
         <div>🎤 Spracherkennung: <b>${Listen.serverOk() ? 'Ryzen (Whisper)' : Listen.browserOk() ? 'iPhone / Safari' : 'nicht verfügbar'}</b></div>
       </div>
       ${hint ? `<p class="warn">⚠️ ${esc(hint)}</p>` : ''}
-      <div class="row2"><button class="btn ghost" data-act="test-voice">🔊 Stimme testen</button><button class="btn ghost" data-act="test-mic">🎤 Mikrofon testen</button></div>
+      <div class="row2"><button class="btn ghost" data-act="test-voice">🔊 Stimme testen</button><button class="btn ghost" data-act="test-mic">🎤 Erkennung testen</button></div>
+      <button class="btn ghost" data-act="test-level" style="margin-top:10px">🎚️ Mikrofon-Pegel testen</button>
       ${micTest ? `<p class="statusbox">${esc(micTest)}</p>` : ''}
       <button class="btn ghost" data-act="test-server" style="margin-top:10px">Server testen</button>
       <button class="btn danger" data-act="reset">Fortschritt zurücksetzen</button>
     </div>${navHtml('settings')}`;
   }
 
+  /* ---------- Hilfe ---------- */
+  let helpText = '', helpMsg = '', helpBusy = false, prevView = 'home';
+
+  function renderHelp() {
+    const back = prevView === 'run' && R && R.steps ? '<button class="btn ghost" data-act="help-back" style="margin-bottom:12px">↩ Zurück zur Lektion</button>' : '';
+    return `<div class="page hasnav">
+      <header class="head"><h1 class="title">🆘 Hilfe</h1></header>
+      ${back}
+      <p class="hint left">Etwas klappt nicht? Schreibe kurz, was passiert ist, und tippe auf Senden. Die Nachricht kommt direkt bei Harme und Claude an. Du musst sonst nichts tun.</p>
+      <label class="field">Was ist passiert?
+        <textarea id="helptext" rows="4" maxlength="500" placeholder="z. B. Das Mikrofon erkennt mich nicht …">${esc(helpText)}</textarea></label>
+      <p class="hint left">Mitgeschickt werden: Gerät und Browser, die App-Einstellungen und die letzten Ergebnisse der Spracherkennung. Keine Kontakte, Fotos oder Passwörter.</p>
+      <button class="btn primary" data-act="help-send" ${helpBusy ? 'disabled' : ''}>${helpBusy ? 'Sende …' : '📨 Hilfe senden'}</button>
+      ${helpMsg ? `<p class="statusbox">${esc(helpMsg)}</p>` : ''}
+    </div>${navHtml('help')}`;
+  }
+
+  async function sendHelp() {
+    helpBusy = true; helpMsg = ''; render();
+    const diag = {
+      app: APP_V, zeit: new Date().toISOString(), ua: UA, ios: IS_IOS, nichtSafari: NOT_SAFARI, installiert: STANDALONE,
+      sprache: navigator.language, erkennung: Listen.browserOk(), server: Voice.server.ok,
+      stimme: Voice.synthVoice ? Voice.synthVoice.name : null, stimmen: Voice.list().length,
+      ansicht: prevView, schritt: R && R.steps && R.steps[R.i] ? { t: R.steps[R.i].t, l: R.steps[R.i].L.l } : null,
+      einstellungen: { ...S.settings, serverUrl: S.settings.serverUrl ? 'gesetzt' : '' }, log: LOG.slice(-22)
+    };
+    try { const p = await navigator.permissions.query({ name: 'microphone' }); diag.mikroRecht = p.state; } catch { /* nicht überall verfügbar */ }
+    let msg = 'Hilfe von ' + (S.settings.name || 'Anke') + ': ' + (helpText.trim() || '(kein Text)') + '\n\n' + JSON.stringify(diag);
+    if (msg.length > 3800) msg = msg.slice(0, 3800);
+    try {
+      const r = await fetchTimeout('https://ntfy.sh/' + HELP_TOPIC + '?title=' + encodeURIComponent('Anke Hilfe') + '&tags=sos&priority=4', { method: 'POST', body: msg }, 12000);
+      if (!r.ok) throw new Error('Status ' + r.status);
+      helpMsg = '✅ Gesendet. Harme sagt Claude Bescheid. Du musst nichts weiter tun.';
+      helpText = '';
+    } catch (e) {
+      helpMsg = '❌ Senden hat nicht geklappt (' + String(e && e.message || e) + '). Bitte Internetverbindung prüfen und nochmal versuchen.';
+    }
+    helpBusy = false;
+    if (view === 'help') render();
+  }
+
+  async function levelTest() {
+    micTest = '🎚️ Sprich jetzt 4 Sekunden lang in normaler Lautstärke, z. B. „one, two, three“ …'; render();
+    let ctx = null;
+    try {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.resume) ctx.resume();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const an = ctx.createAnalyser(); an.fftSize = 1024;
+      ctx.createMediaStreamSource(stream).connect(an);
+      const buf = new Uint8Array(an.fftSize); let peak = 0; const t0 = Date.now();
+      await new Promise(res => {
+        const tick = () => {
+          an.getByteTimeDomainData(buf);
+          let m = 0; for (const v of buf) m = Math.max(m, Math.abs(v - 128));
+          peak = Math.max(peak, m / 128);
+          if (Date.now() - t0 < 4000) requestAnimationFrame(tick); else res();
+        };
+        tick();
+      });
+      stream.getTracks().forEach(t => t.stop());
+      const pct = Math.round(peak * 100);
+      logEv('pegeltest', pct);
+      micTest = pct < 3 ? `❌ Pegel ${pct} %: Es kommt fast nichts am Mikrofon an. Prüfe, ob das Mikrofon verdeckt ist (Hülle, Finger) und ob Safari/Chrome das Mikrofon darf.`
+        : pct < 15 ? `⚠️ Pegel ${pct} %: sehr leise. Sprich näher am Gerät (ca. 10 cm) und etwas lauter.`
+        : `✅ Pegel ${pct} %: das Mikrofon hört dich gut.`;
+    } catch (e) { micTest = '❌ ' + errMsg(e); }
+    try { if (ctx && ctx.close) ctx.close(); } catch { /* egal */ }
+    if (view === 'settings') render();
+  }
+
   function render() {
     if (view === 'home') app.innerHTML = renderHome();
+    else if (view === 'help') app.innerHTML = renderHelp();
     else if (view === 'run') app.innerHTML = renderRun();
     else if (view === 'done') app.innerHTML = renderDone();
     else if (view === 'settings') app.innerHTML = renderSettings();
@@ -627,6 +719,10 @@
         else skipMic();
         break;
       case 'selfsay': selfSay(); break;
+      case 'help': if (view !== 'help') prevView = view; view = 'help'; Voice.cancel(); render(); break;
+      case 'help-back': view = prevView === 'run' && R && R.steps ? 'run' : 'home'; render(); break;
+      case 'help-send': sendHelp(); break;
+      case 'test-level': levelTest(); break;
       case 'test-voice': Voice.speak('Hello ' + S.settings.name + '! A, B, C. H like horse.'); break;
       case 'test-server': Voice.check().then(() => render()); break;
       case 'test-mic':
@@ -655,6 +751,8 @@
     else if (k === 'serverUrl') Voice.check().then(() => { if (view === 'settings') render(); });
     else render();
   });
+
+  app.addEventListener('input', e => { if (e.target && e.target.id === 'helptext') helpText = e.target.value; });
 
   document.addEventListener('visibilitychange', () => { if (document.hidden) Voice.cancel(); });
 

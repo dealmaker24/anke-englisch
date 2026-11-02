@@ -7,7 +7,7 @@
 html,body{margin:0;background:var(--bg);color:var(--text);
   font:17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Rounded","Segoe UI",Roboto,sans-serif;
   -webkit-text-size-adjust:100%;overscroll-behavior:none}
-button,input,select{font:inherit;color:inherit}
+button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer;border:0;background:none}
 #app{max-width:520px;margin:0 auto;min-height:100vh;min-height:100dvh}
 .page{padding:calc(14px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom))}
@@ -139,3 +139,5 @@ button{cursor:pointer;border:0;background:none}
 
 /* Hinweisfeld */
 .warn{background:#fff3cd;border:2px solid #f0d58a;border-radius:14px;padding:10px 12px;margin:10px 0;font-size:15px;line-height:1.4;text-align:left;color:#5c4400}
+
+.field textarea{display:block;width:100%;margin-top:6px;padding:12px;border-radius:12px;border:2px solid var(--line);background:var(--card);color:var(--text);font:inherit;font-size:17px;resize:vertical}
