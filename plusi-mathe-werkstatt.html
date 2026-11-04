@@ -1,8 +1,18 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#3a57f0">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mathe">
 <title>Plusi Mathe-Werkstatt</title>
-<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=Nunito:wght@400;600;700;800&family=Patrick+Hand&display=swap" rel="stylesheet">
 <style>
+:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px)}
+img{max-width:100%}
 /* Layout: eine Spalte wie ein Schulheft. Lösungswege stehen auf Karopapier, Plusi begleitet durch die Seiten. */
 :root{
   --bg:#f2f5ff;--surface:#ffffff;--ink:#1b2547;--muted:#566089;--line:#d8dff4;
@@ -219,6 +229,8 @@ body.in-session #tabs{display:none}
 @media (max-width:380px){.plusi{width:78px;height:78px}.bubble h1{font-size:22px}.q{font-size:18.5px}.glyph{width:48px;height:48px;font-size:16px}}
 
 </style>
+</head>
+<body>
 <div class="app"><main id="view"></main></div>
 <nav id="tabs" aria-label="Hauptmenü"></nav>
 <script>
@@ -1158,5 +1170,6 @@ document.addEventListener('keydown',e=>{
 
 render();
 })();
-
 </script>
+</body>
+</html>
